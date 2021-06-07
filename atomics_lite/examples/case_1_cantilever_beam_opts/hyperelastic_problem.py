@@ -1,6 +1,7 @@
 import numpy as np
 import scipy.sparse as sp
 import om_lite.api as om
+from hyperelastic_model import HyperElasticModel
 
 # from atomics_lite.api import PDEProblem, AtomicsGroup
 
@@ -13,7 +14,7 @@ from atomics_lite.states_comp import StatesComp
 from atomics_lite.scalar_output_comp import ScalarOutputsComp
 # from atomics_lite.field_output_comp import FieldOutputsComp
 
-class HyperElasticModel(object):
+class HyperElasticProblem(HyperElasticModel):
 
     def setup(self, num_dof_density, density_function_space, pde_problem):
         self.inputs = {}
@@ -36,7 +37,6 @@ class HyperElasticModel(object):
             # val=x_val,
             # val=np.random.random(num_dof_density) * 0.86,
         )
-        self.nx = nx = num_dof_density
         # self.iv_components_list.append(self.x)
 
         self.density_filter = GeneralFilterComp(
@@ -93,36 +93,26 @@ class HyperElasticModel(object):
             comp.inputs = self.inputs
             comp.outputs = self.outputs
             comp.partials = self.partials
-            comp.residuals = self.residuals
             comp.setup()
 
-        self.linear_eq_constraints = {}
-        self.linear_eq_constraints['A'] = None
-        self.linear_eq_constraints['b'] = None
-
-        self.linear_ineq_constraints = {}
-        self.linear_ineq_constraints['A'] = None
-        self.linear_ineq_constraints['b'] = None
-
-
-        self.bound_constraints = {}
+        self.linear_eq_constraints = None
+        self.linear_ineq_constraints = None
         self.bound_constraints['dv_indices'] = np.arange(nx)
-        # self.bound_constraints['upper'] = np.full((nx,), .99)
         self.bound_constraints['upper'] = np.full((nx,), 1.)
         self.bound_constraints['lower'] = np.full((nx,), 5e-3)
 
-
     # tol=10 means tol=None runs the equivalent of full-space method (just one nonlinear iteration is done)
-    def evaluate_functions(self, x_val, y_val, tol=1.11*1e-3, method='surf'):
+    def evaluate_functions(self, x_val, y_val, psi=None, tol=1.11*1e-3, method='surf'):
         # if x_val is not None:
         #     self.x.set_val('density_unfiltered', x_val)
         # if y_val is not None:
         #     self.y.set_val('displacements', y_val)
+        # if psi is not None:
+        #     self.psi = psi
 
         inputs = self.inputs
         outputs = self.outputs
         partials = self.partials
-        residuals = self.residuals
 
         self.density_filter.compute(inputs, outputs)
 
@@ -130,20 +120,18 @@ class HyperElasticModel(object):
 
         # TODO: Add apply_nonlinear in states_comp
         if method == 'fs':
-            self.y.apply_nonlinear(inputs, outputs, residuals)
+            self.y.apply_nonlinear(inputs, outputs)
         elif method == 'cfs':
             # solve_nonlinear is different from OM
             self.y.solve_nonlinear(inputs, outputs, tol)
         elif method == 'surf':
             self.y.solve_nonlinear(inputs, outputs, tol)
             # self.y.set_value(y_val)
-            self.y.apply_nonlinear(inputs, outputs, residuals)
-
-            # print(residuals)
+            self.y.apply_nonlinear(inputs, outputs)
 
         self.f.compute(inputs, outputs)
 
-        return outputs['displacements'], outputs['compliance'], residuals['displacements'], outputs['avg_density']
+        return y_val, outputs['compliance'], outputs['avg_density']
         
 
     def evaluate_derivatives(self, x_val=None, y_val=None, psi=None, tol=1.11*1e-3, method='surf'):
@@ -178,41 +166,37 @@ class HyperElasticModel(object):
         self.psi = d_residuals['displacements']
 
         # Making partials scipy coo matrix
-        pR_px1_data = partials['displacements', 'density']
+        pR_px1 = partials['displacements', 'density']
         coo = partials['displacements', 'density', 'coo']
-        pR_px1 = sp.coo_matrix((pR_px1_data, coo), shape=(outputs['displacements'].size, inputs['density'].size))
+        partials['displacements', 'density'] = sp.coo_matrix((pR_px1, coo), shape=(outputs['displacements'].size, inputs['density'].size))
 
-        pR_py_data = partials['displacements', 'displacements']
-        coo = partials['displacements', 'displacements', 'coo']
-        pR_py = sp.coo_matrix((pR_py_data, coo), shape=(outputs['displacements'].size, inputs['displacements'].size))
-
-        dx1_dx_data = partials['density', 'density_unfiltered']
+        dx1_dx = partials['density', 'density_unfiltered']
         coo = partials['density', 'density_unfiltered', 'coo']
-        dx1_dx = sp.coo_matrix((dx1_dx_data, coo), shape=(outputs['density'].size, inputs['density_unfiltered'].size))
+        partials['density', 'density_unfiltered'] = sp.coo_matrix((dx1_dx, coo), shape=(outputs['density'].size, inputs['density_unfiltered'].size))
         
         # df_dx1 = psi @ partials['R', 'x1']
         if method != 'fs':
             pf_px1 = partials['compliance', 'density']
-            pf_px = pf_px1 @ dx1_dx
+            pf_px = pf_px1 @ partials['density', 'density_unfiltered']
 
             pf_py = partials['compliance', 'displacements']
 
             if method == 'rs':
-                df_dx1 = self.psi @ pR_px1
+                df_dx1 = self.psi @ partials['displacements', 'density']
                 # df_dx = partials['f', 'x1'] @ partials['x1', 'x']
-                df_dx = df_dx1 @ dx1_dx
+                df_dx = df_dx1 @ partials['density', 'density_unfiltered']
             
             # Chain rule
             # dc_dx = partials['c', 'x1'] @ partials['x1', 'x']
-            pc_px = dc_dx = partials['avg_density', 'density'] @ dx1_dx
+            pc_px = dc_dx = partials['avg_density', 'density'] @ partials['density', 'density_unfiltered']
             pc_py = np.zeros((inputs['displacements'].size))
             
             # pR_px = partials['R', 'x1'] @ partials['x1', 'x']
-            self.pR_px = pR_px1 @ dx1_dx
-            self.pR_py = pR_py
+            self.pR_px = partials['displacements', 'density'] @ partials['density', 'density_unfiltered']
+            self.pR_py = partials['displacements', 'displacements']
             print("reached END")
-            
-            # else:
+
+        # else:
         #     df_dx1 = psi @ partials['displacements', 'density']
 
         #     # Chain rule
@@ -223,7 +207,7 @@ class HyperElasticModel(object):
         #     # pR_px = partials['R', 'x1'] @ partials['x1', 'x']
         #     self.pR_px = partials['displacements', 'density'] @ partials['density', 'density_unfiltered']
 
-        return pf_px, pf_py, pc_px, pc_py, self.psi, self.pR_px, self.pR_py
+        return df_dx, dc_dx, self.psi, self.pR_px
 
     def MAUD(self):
         

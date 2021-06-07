@@ -9,6 +9,7 @@ from scipy.sparse import coo_matrix
 from scipy.sparse.linalg import splu
 
 
+
 import scipy as sp
 import scipy.sparse as sparse
 import scipy.sparse.linalg as splinalg
@@ -109,17 +110,17 @@ class StatesComp(om.ImplicitComponent):
         for argument_name, argument_function in iteritems(self.argument_functions_dict):
             argument_function.vector().set_local(inputs[argument_name])
 
-    # def apply_nonlinear(self, inputs, outputs, residuals):
-    #     print('---run-------apply_nonlinear')
+    def apply_nonlinear(self, inputs, outputs, residuals):
+        print('---run-------apply_nonlinear')
 
-    #     pde_problem = self.options['pde_problem']
-    #     state_name = self.options['state_name']
+        pde_problem = self.options['pde_problem']
+        state_name = self.options['state_name']
 
-    #     residual_form = pde_problem.states_dict[state_name]['residual_form']
+        residual_form = pde_problem.states_dict[state_name]['residual_form']
 
-    #     self._set_values(inputs, outputs)
-    #     residuals[state_name] = df.assemble(residual_form).get_local()
-    #     print('---finish-------apply_nonlinear')
+        self._set_values(inputs, outputs)
+        residuals[state_name] = df.assemble(residual_form).get_local()
+        print('---finish-------apply_nonlinear')
 
     def solve_nonlinear(self, inputs, outputs, tol):
         print('---run-------solve_nonlinear')

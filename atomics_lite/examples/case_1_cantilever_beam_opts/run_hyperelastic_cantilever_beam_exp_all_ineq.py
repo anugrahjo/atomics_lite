@@ -5,6 +5,7 @@ import numpy as np
 # import openmdao.api as om
 import om_lite.api as om
 from hyperelastic_model import HyperElasticModel
+from hyperelastic_model import HyperElasticModel
 from lsdo_optimizer.api import Problem
 from lsdo_optimizer.api import SQP_OSQP
 
@@ -147,13 +148,10 @@ class HyperElasticProblem(Problem):
             self.y_val, self.f, self.res, self.c = model.evaluate_functions(x[:nx], x[nx:], method = method, tol=tol)
             self.hot_x_for_fn_evals[:] = 1. * x
 
-        # bound_constraints = x[:nx]
         bound_constraints_upp = model.bound_constraints['upper'] - x[:nx]
         bound_constraints_low = x[:nx] - model.bound_constraints['lower']
         
-        # return np.concatenate(([c - 0.5], bound_constraints))
         return np.concatenate(([c - 0.5], bound_constraints_low, bound_constraints_upp))
-        # return np.concatenate(([0.5 - c], bound_constraints_low, bound_constraints_upp))
 
     def evaluate_residuals(self, x):
         # if self.hot_x_for_fn_evals != x:
@@ -190,11 +188,10 @@ class HyperElasticProblem(Problem):
             self.pf_px, self.pf_py, self.pc_px, self.pc_py, self.psi, self.pR_px, self.pR_py = model.evaluate_derivatives(x[:nx], x[nx:], self.psi, method = method, tol=tol)
             self.hot_x_for_deriv_evals[:] = 1. * x
 
-        # pc_pv = -np.append(self.pc_px, self.pc_py).reshape((1, nx+ny))
         pc_pv = np.append(self.pc_px, self.pc_py).reshape((1, nx+ny))
         pLB_pv = np.append(np.identity(nx), np.zeros((nx, ny)), axis=1)
 
-        return sp.csc_matrix(np.concatenate((pc_pv, pLB_pv, -pLB_pv)))
+        return np.concatenate((pc_pv, pLB_pv, -pLB_pv))
 
     def compute_residual_jacobian(self, x):
         # if self.hot_x_for_deriv_evals != x:
@@ -209,7 +206,7 @@ class HyperElasticProblem(Problem):
 
 prob = HyperElasticProblem()
 
-optimizer = SQP_OSQP(prob, opt_tol=1e-6, feas_tol=1e-6)
+optimizer = SQP_OSQP(prob, tol=1e-6)
 optimizer.setup()
 optimizer.run()
 optimizer.print(table = True)

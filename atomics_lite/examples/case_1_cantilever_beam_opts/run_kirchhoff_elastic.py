@@ -100,14 +100,14 @@ y_val = np.ones((3,), dtype=float)
 psi = np.ones((3,), dtype=float)
 
 tol = 1e-15
-method = 'cfs'
+method = 'surf'
 
 # model = KirchoffElasticModel()
 model = HyperElasticModel()
 model.setup(num_dof_density, density_function_space, pde_problem)
 
-y_val, f, c = model.evaluate_functions(x_val, y_val, psi, method = 'cfs', tol=tol)
-df_dx, dc_dx, psi, pR_px = model.evaluate_derivatives(x_val, y_val, psi, method = 'cfs', tol=tol)
+y_val, f, res, c = model.evaluate_functions(x_val, y_val, method = method, tol=tol)
+pf_px, pf_py, pc_px, pc_py, psi, pR_px, pR_py = model.evaluate_derivatives(x_val, y_val, psi, method = method, tol=tol)
 
 
 # comp = om.IndepVarComp()
