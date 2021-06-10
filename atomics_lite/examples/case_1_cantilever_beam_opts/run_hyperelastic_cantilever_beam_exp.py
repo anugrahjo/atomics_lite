@@ -5,8 +5,9 @@ import numpy as np
 # import openmdao.api as om
 import om_lite.api as om
 from hyperelastic_model import HyperElasticModel
-from lsdo_optimizer.api import Problem
+# from lsdo_optimizer.api import Problem
 from lsdo_optimizer.api import SQP_OSQP
+from array_manager.api import VectorComponentsDict
 
 import scipy.sparse as sp
 
@@ -17,8 +18,10 @@ from atomics_lite.general_filter_comp import GeneralFilterComp
 np.random.seed(0)
 
 # Define the mesh and create the PDE problem
-NUM_ELEMENTS_X = 120 
-NUM_ELEMENTS_Y = 30
+# NUM_ELEMENTS_X = 120 
+NUM_ELEMENTS_X = 60
+# NUM_ELEMENTS_Y = 30 
+NUM_ELEMENTS_Y = 15
 
 # nx = NUM_ELEMENTS_X * NUM_ELEMENTS_Y
 
@@ -81,8 +84,6 @@ residual_form = get_residual_form(
     1
 )
 
-
-
 pde_problem.add_state('displacements', displacements_function, residual_form, 'density')
 
 # Add output-avg_density to the PDE problem:
@@ -104,41 +105,36 @@ pde_problem.add_bc(df.DirichletBC(displacements_function_space, df.Constant((0.0
 num_dof_density = pde_problem.inputs_dict['density']['function'].function_space().dim()
 
 # Define the omlite model
-x_val = np.ones((2,), dtype=float)
-y_val = np.ones((3,), dtype=float)
-psi = np.ones((3,), dtype=float)
+x_val = np.full((num_dof_density,), .1)
+y_val = np.full((3,), 1.)
+psi = np.full((3,), 1.)
 
 # tol = 1.11 * 1e-3
-tol = 1.e-2
+tol = 1.e-15
 method = 'surf'
 
 model = HyperElasticModel()
 model.setup(num_dof_density, density_function_space, pde_problem)
 
-y_val, f, res, c = model.evaluate_functions(x_val, y_val, method = method, tol=tol)
-# print("ny=", y_val.size)
-# print("nr-ny norm", np.linalg.norm(y_val-res))
-pf_px, pf_py, pc_px, pc_py, psi, pR_px, pR_py = model.evaluate_derivatives(x_val, y_val, psi, method = method, tol=tol)
+# y_val, f, res, c = model.evaluate_functions(x_val, y_val, method = method, tol=tol)
 
-class HyperElasticProblem(Problem):
-    # self.n = n = model.nx + model.ny
-    def __init__(self):
-        self.nx = model.nx
-        self.ny = y_val.size
-        self.n = n = model.nx + y_val.size
+# pf_px, pf_py, pc_px, pc_py, psi, pR_px, pR_py = model.evaluate_derivatives(x_val, y_val, psi, method = method, tol=tol)
+
+class HyperElasticProblem(om.Problem):
+    # def __init__(self, model):
+    #     super().__init__(model)
+
+    def initialize(self):
         self.nc = 1 + 2 * self.nx
-        self.psi = None
-        self.hot_x_for_fn_evals = np.full((n,), np.inf)
-        self.hot_x_for_deriv_evals = np.full((n,), np.inf)
-
-    def evaluate_objective(self, x):
-        # if self.hot_x_for_fn_evals != x:
-        if not(np.array_equal(self.hot_x_for_fn_evals, x)):
-            nx = self.nx
-            self.y_val, self.f, self.res, self.c = model.evaluate_functions(x[:nx], x[nx:], method = method, tol=tol)
-            self.hot_x_for_fn_evals[:] = 1. * x
         
-        return f
+        self.x_and_y_vector_dict['x'] = dict(shape=(self.nx,))
+        self.x_and_y_vector_dict['y'] = dict(shape=(self.ny,))
+        
+        self.cons_and_res_vector_dict['average_density'] = dict(shape=(1,))
+        self.cons_and_res_vector_dict['density_lower_bound'] = dict(shape=(self.nx,))
+        self.cons_and_res_vector_dict['density_upper_bound'] = dict(shape=(self.nx,))
+        self.cons_and_res_vector_dict['residuals+'] = dict(shape=(self.ny,))
+        self.cons_and_res_vector_dict['residuals-'] = dict(shape=(self.ny,))
 
     def evaluate_constraints(self, x):
         # if self.hot_x_for_fn_evals != x:
@@ -151,36 +147,9 @@ class HyperElasticProblem(Problem):
         bound_constraints_upp = model.bound_constraints['upper'] - x[:nx]
         bound_constraints_low = x[:nx] - model.bound_constraints['lower']
         
-        # return np.concatenate(([c - 0.5], bound_constraints))
-        return np.concatenate(([c - 0.5], bound_constraints_low, bound_constraints_upp))
-        # return np.concatenate(([0.5 - c], bound_constraints_low, bound_constraints_upp))
-
-    def evaluate_residuals(self, x):
-        # if self.hot_x_for_fn_evals != x:
-        if not(np.array_equal(self.hot_x_for_fn_evals, x)):
-            nx = self.nx
-            self.y_val, self.f, self.res, self.c = model.evaluate_functions(x[:nx], x[nx:], method = method, tol=tol)
-            self.hot_x_for_fn_evals[:] = 1. * x
-        
-        return self.res
-
-    def solve_residual_equations(self, x, tol):
-        # if self.hot_x_for_fn_evals != x:
-        if not(np.array_equal(self.hot_x_for_fn_evals, x)):
-            nx = self.nx
-            self.y_val, self.f, self.res, self.c = model.evaluate_functions(x[:nx], x[nx:], self.psi, method = method, tol=tol)
-            self.hot_x_for_fn_evals[:] = 1. * x
-        
-        return self.y_val
-    
-    def compute_gradient(self, x):
-        # if self.hot_x_for_deriv_evals != x.any():
-        if not(np.array_equal(self.hot_x_for_deriv_evals, x)):
-            nx = self.nx
-            self.pf_px, self.pf_py, self.pc_px, self.pc_py, self.psi, self.pR_px, self.pR_py = model.evaluate_derivatives(x[:nx], x[nx:], self.psi, method = method, tol=tol)
-            self.hot_x_for_deriv_evals[:] = 1. * x
-        
-        return np.append(self.pf_px, self.pf_py)
+        # return np.concatenate(([self.c - 0.5], bound_constraints))
+        return np.concatenate(([self.c - 0.5], bound_constraints_low, bound_constraints_upp))
+        # return np.concatenate(([0.5 - self.c], bound_constraints_low, bound_constraints_upp))
 
     def compute_constraint_jacobian(self, x):
         # if self.hot_x_for_deriv_evals != x:
@@ -196,25 +165,29 @@ class HyperElasticProblem(Problem):
 
         return sp.csc_matrix(np.concatenate((pc_pv, pLB_pv, -pLB_pv)))
 
-    def compute_residual_jacobian(self, x):
-        # if self.hot_x_for_deriv_evals != x:
-        if not(np.array_equal(self.hot_x_for_deriv_evals, x)):
-            nx = self.nx
-            self.pf_px, self.pf_py, self.pc_px, self.pc_py, self.psi, self.pR_px, self.pR_py = model.evaluate_derivatives(x[:nx], x[nx:], self.psi, method = method, tol=tol)
-            self.hot_x_for_deriv_evals[:] = 1. * x
-
-        # print(self.pR_px, self.pR_py.shape)
-        return sp.hstack((self.pR_px, self.pR_py))
 
 
-prob = HyperElasticProblem()
+prob = HyperElasticProblem(model, formulation=method, res_tol=tol)
 
-optimizer = SQP_OSQP(prob, opt_tol=1e-6, feas_tol=1e-6)
-optimizer.setup()
-optimizer.run()
-optimizer.print(table = True)
+x = np.full((prob.n,), 1.)
+x[450:] = .5
+f = prob.evaluate_objective(x)
+c = prob.evaluate_constraints(x)
+
+print(f)
+print(c)
+# y = prob.evaluate_states(x)
+
+# y = prob.evaluate_states(x)
+# y = prob.evaluate_states(x)
+
+# optimizer = SQP_OSQP(prob, opt_tol=1e-6, feas_tol=1e-6)
+# optimizer.setup()
+# optimizer.run()
 
 
+
+# optimizer.print(table = True)
 # prob = HyperElasticProblem(nx=, ny=, nc=)
 
 

@@ -1,10 +1,13 @@
 import dolfin as df
 import numpy as np
+
 # import openmdao.api as om
 import om_lite.api as om
 # from kirchoff_elastic_model import KirchoffElasticModel
+from lsdo_optimizer.api import SQP_OSQP
 from hyperelastic_model import HyperElasticModel
 
+import scipy.sparse as sp
 
 from atomics_lite.api import PDEProblem, AtomicsGroup
 from atomics_lite.pdes.st_kirchhoff import get_residual_form
@@ -16,8 +19,10 @@ np.random.seed(0)
 '''
 1. Define the mesh
 '''
-NUM_ELEMENTS_X = 80
-NUM_ELEMENTS_Y = 40
+NUM_ELEMENTS_X = 40
+# NUM_ELEMENTS_X = 80
+NUM_ELEMENTS_Y = 20
+# NUM_ELEMENTS_Y = 40
 LENGTH_X = 160.
 LENGTH_Y = 80.
 
@@ -95,19 +100,74 @@ pde_problem.add_bc(df.DirichletBC(displacements_function_space, df.Constant((0.0
 num_dof_density = pde_problem.inputs_dict['density']['function'].function_space().dim()
 
 # Define the omlite model
-x_val = np.ones((2,), dtype=float)
-y_val = np.ones((3,), dtype=float)
-psi = np.ones((3,), dtype=float)
+x_val = np.full((num_dof_density,), .1)
+y_val = np.full((3,), 1.)
+psi = np.full((3,), 1.)
 
-tol = 1e-15
+# tol = 1.11 * 1e-3
+tol = 1.e-15
 method = 'surf'
 
-# model = KirchoffElasticModel()
 model = HyperElasticModel()
 model.setup(num_dof_density, density_function_space, pde_problem)
 
-y_val, f, res, c = model.evaluate_functions(x_val, y_val, method = method, tol=tol)
-pf_px, pf_py, pc_px, pc_py, psi, pR_px, pR_py = model.evaluate_derivatives(x_val, y_val, psi, method = method, tol=tol)
+# y_val, f, res, c = model.evaluate_functions(x_val, y_val, method = method, tol=tol)
+
+# pf_px, pf_py, pc_px, pc_py, psi, pR_px, pR_py = model.evaluate_derivatives(x_val, y_val, psi, method = method, tol=tol)
+
+class KirchoffElasticProblem(om.Problem):
+    # def __init__(self, model):
+    #     super().__init__(model)
+
+    def initialize(self):
+        self.nc = 1 + 2 * self.nx
+        
+        self.x_and_y_vector_dict['x'] = dict(shape=(self.nx,))
+        self.x_and_y_vector_dict['y'] = dict(shape=(self.ny,))
+        
+        self.cons_and_res_vector_dict['average_density'] = dict(shape=(1,))
+        self.cons_and_res_vector_dict['density_lower_bound'] = dict(shape=(self.nx,))
+        self.cons_and_res_vector_dict['density_upper_bound'] = dict(shape=(self.nx,))
+        self.cons_and_res_vector_dict['residuals+'] = dict(shape=(self.ny,))
+        self.cons_and_res_vector_dict['residuals-'] = dict(shape=(self.ny,))
+
+    def evaluate_constraints(self, x):
+        # if self.hot_x_for_fn_evals != x:
+        nx = self.nx
+        if not(np.array_equal(self.hot_x_for_fn_evals, x)):
+            self.y_val, self.f, self.res, self.c = model.evaluate_functions(x[:nx], x[nx:], method = method, tol=tol)
+            self.hot_x_for_fn_evals[:] = 1. * x
+
+        # bound_constraints = x[:nx]
+        bound_constraints_upp = model.bound_constraints['upper'] - x[:nx]
+        bound_constraints_low = x[:nx] - model.bound_constraints['lower']
+        
+        # return np.concatenate(([self.c - 0.5], bound_constraints))
+        return np.concatenate(([self.c - 0.5], bound_constraints_low, bound_constraints_upp))
+        # return np.concatenate(([0.5 - self.c], bound_constraints_low, bound_constraints_upp))
+
+    def compute_constraint_jacobian(self, x):
+        # if self.hot_x_for_deriv_evals != x:
+        nx = self.nx
+        ny = self.ny
+        if not(np.array_equal(self.hot_x_for_deriv_evals, x)):
+            self.pf_px, self.pf_py, self.pc_px, self.pc_py, self.psi, self.pR_px, self.pR_py = model.evaluate_derivatives(x[:nx], x[nx:], self.psi, method = method, tol=tol)
+            self.hot_x_for_deriv_evals[:] = 1. * x
+
+        # pc_pv = -np.append(self.pc_px, self.pc_py).reshape((1, nx+ny))
+        pc_pv = np.append(self.pc_px, self.pc_py).reshape((1, nx+ny))
+        pLB_pv = np.append(np.identity(nx), np.zeros((nx, ny)), axis=1)
+
+        return sp.csc_matrix(np.concatenate((pc_pv, pLB_pv, -pLB_pv)))
+
+
+
+prob = KirchoffElasticProblem(model, formulation=method, res_tol=tol)
+
+optimizer = SQP_OSQP(prob, opt_tol=1e-6, feas_tol=1e-6)
+optimizer.setup()
+optimizer.run()
+# optimizer.print(table = True)
 
 
 # comp = om.IndepVarComp()
